@@ -35,6 +35,12 @@ func main() {
 	}
 
 	gameState := gamelogic.NewGameState(username)
+	err = pubsub.SubscribeJSON(conn, routing.ExchangePerilDirect, queueName, routing.PauseKey, pubsub.TransientQueue, handlerPause(gameState))
+	if err != nil {
+		fmt.Printf("subscribing to json: %v", err)
+		os.Exit(1)
+	}
+
 	for {
 		input := gamelogic.GetInput()
 		if len(input) == 0 {
@@ -95,4 +101,11 @@ func spam() {
 func quit() {
 	gamelogic.PrintQuit()
 	os.Exit(0)
+}
+
+func handlerPause(gs *gamelogic.GameState) func(routing.PlayingState) {
+	return func(state routing.PlayingState) {
+		defer fmt.Print("> ")
+		gs.HandlePause(state)
+	}
 }

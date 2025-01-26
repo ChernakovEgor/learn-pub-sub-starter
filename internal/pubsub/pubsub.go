@@ -13,6 +13,43 @@ const (
 	TransientQueue
 )
 
+func SubscribeJSON[T any](
+	conn *amqp.Connection,
+	exchange,
+	queueName,
+	key string,
+	simpleQueueType int,
+	handler func(T),
+) error {
+
+	channel, _, err := DeclareAndBind(conn, exchange, queueName, key, simpleQueueType)
+	if err != nil {
+		return fmt.Errorf("binding quque: %v", err)
+	}
+
+	deliveries, err := channel.Consume(queueName, "", false, false, false, false, nil)
+	if err != nil {
+		return fmt.Errorf("creating consume channlel: %v", err)
+	}
+
+	go func() {
+		for d := range deliveries {
+			var message T
+			err := json.Unmarshal(d.Body, &message)
+			if err != nil {
+				fmt.Printf("could not unmarshal message: %v\n", err)
+			}
+			handler(message)
+			err = d.Ack(false)
+			if err != nil {
+				fmt.Printf("could not ack message: %v\n", err)
+			}
+		}
+	}()
+
+	return nil
+}
+
 func PublishJSON[T any](ch *amqp.Channel, exchange, key string, val T) error {
 	jsonBytes, err := json.Marshal(val)
 	if err != nil {
