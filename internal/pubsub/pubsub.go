@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 )
@@ -13,13 +14,33 @@ const (
 	TransientQueue
 )
 
+type Acktype int
+
+func (a Acktype) String() string {
+	switch a {
+	case Ack:
+		return "Ack"
+	case NackRequeue:
+		return "NackRequeue"
+	case NackDiscard:
+		return "NackDiscard"
+	}
+	return "InvalidAcktype"
+}
+
+const (
+	Ack Acktype = iota
+	NackRequeue
+	NackDiscard
+)
+
 func SubscribeJSON[T any](
 	conn *amqp.Connection,
 	exchange,
 	queueName,
 	key string,
 	simpleQueueType int,
-	handler func(T),
+	handler func(T) Acktype,
 ) error {
 
 	channel, _, err := DeclareAndBind(conn, exchange, queueName, key, simpleQueueType)
@@ -39,10 +60,25 @@ func SubscribeJSON[T any](
 			if err != nil {
 				fmt.Printf("could not unmarshal message: %v\n", err)
 			}
-			handler(message)
-			err = d.Ack(false)
-			if err != nil {
-				fmt.Printf("could not ack message: %v\n", err)
+			res := handler(message)
+			log.Printf("acknowledge status: %v\n", res)
+
+			switch res {
+			case Ack:
+				err = d.Ack(false)
+				if err != nil {
+					fmt.Printf("could not ack message: %v\n", err)
+				}
+			case NackRequeue:
+				err = d.Nack(false, true)
+				if err != nil {
+					fmt.Printf("could not requeue message: %v\n", err)
+				}
+			case NackDiscard:
+				err = d.Nack(false, false)
+				if err != nil {
+					fmt.Printf("could not discard message: %v\n", err)
+				}
 			}
 		}
 	}()
@@ -93,7 +129,9 @@ func DeclareAndBind(
 		exclusive = true
 	}
 
-	queue, err := channel.QueueDeclare(queueName, durable, autoDelete, exclusive, false, nil)
+	table := make(amqp.Table)
+	table["x-dead-letter-exchange"] = "peril_dlx"
+	queue, err := channel.QueueDeclare(queueName, durable, autoDelete, exclusive, false, table)
 	if err != nil {
 		return nil, amqp.Queue{}, fmt.Errorf("could not create queue: %v", err)
 	}
