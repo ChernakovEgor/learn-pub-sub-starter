@@ -2,8 +2,8 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"os"
-	// "os/signal"
 
 	"github.com/ChernakovEgor/learn-pub-sub-starter/internal/gamelogic"
 	"github.com/ChernakovEgor/learn-pub-sub-starter/internal/pubsub"
@@ -33,6 +33,8 @@ func main() {
 		fmt.Printf("could not create durable queue: %v", err)
 		os.Exit(1)
 	}
+
+	pubsub.SubscribeGob(conn, "peril_topic", "game_logs", "game_logs.*", pubsub.DurableQueue, handlerLogs())
 
 	gamelogic.PrintServerHelp()
 	for {
@@ -75,4 +77,12 @@ func resume(channel *amqp.Channel) {
 func quit() {
 	fmt.Println("Shutting down...")
 	os.Exit(0)
+}
+
+func handlerLogs() func(routing.GameLog) pubsub.Acktype {
+	return func(gamelog routing.GameLog) pubsub.Acktype {
+		defer log.Println(gamelog)
+		gamelogic.WriteLog(gamelog)
+		return pubsub.Ack
+	}
 }

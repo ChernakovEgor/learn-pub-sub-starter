@@ -1,7 +1,9 @@
 package pubsub
 
 import (
+	"bytes"
 	"context"
+	"encoding/gob"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -48,6 +50,7 @@ func SubscribeJSON[T any](
 		return fmt.Errorf("binding quque: %v", err)
 	}
 
+	// channel.Qos(10, 0, false)
 	deliveries, err := channel.Consume(queueName, "", false, false, false, false, nil)
 	if err != nil {
 		return fmt.Errorf("creating consume channlel: %v", err)
@@ -142,4 +145,94 @@ func DeclareAndBind(
 	}
 
 	return channel, queue, nil
+}
+
+func PublishGob[T any](ch *amqp.Channel, exchange, key string, val T) error {
+	var buffer bytes.Buffer
+	encoder := gob.NewEncoder(&buffer)
+	err := encoder.Encode(val)
+	if err != nil {
+		return fmt.Errorf("encoding to gob: %v", err)
+	}
+
+	msg := amqp.Publishing{
+		ContentType: "application/gob",
+		Body:        buffer.Bytes(),
+	}
+
+	err = ch.PublishWithContext(context.Background(), exchange, key, false, false, msg)
+	if err != nil {
+		return fmt.Errorf("publishing gob: %v", err)
+	}
+	return nil
+}
+
+func SubscribeGob[T any](conn *amqp.Connection,
+	exchange,
+	queueName,
+	key string,
+	simpleQueueType int,
+	handler func(T) Acktype,
+) error {
+
+	return subscribe(conn, exchange, queueName, key, simpleQueueType, handler, func(data []byte) (T, error) {
+		buffer := bytes.NewBuffer(data)
+		decoder := gob.NewDecoder(buffer)
+		var msg T
+		err := decoder.Decode(&msg)
+		return msg, err
+	})
+}
+
+func subscribe[T any](
+	conn *amqp.Connection,
+	exchange,
+	queueName,
+	key string,
+	simpleQueueType int,
+	handler func(T) Acktype,
+	unmarshaller func([]byte) (T, error),
+) error {
+
+	channel, _, err := DeclareAndBind(conn, exchange, queueName, key, simpleQueueType)
+	if err != nil {
+		return fmt.Errorf("binding to queue: %v", err)
+	}
+
+	// channel.Qos(10, 0, false)
+	deliveries, err := channel.Consume(queueName, "", false, false, false, false, nil)
+	go func() {
+		for d := range deliveries {
+			msg, err := unmarshaller(d.Body)
+			if err != nil {
+				log.Printf("unmarshaling delivery: %v", err)
+			}
+
+			ackStatus := handler(msg)
+			switch ackStatus {
+			case Ack:
+				err := d.Ack(false)
+				if err != nil {
+					log.Printf("could not ack delivery: %v", err)
+				}
+			case NackDiscard:
+				err := d.Nack(false, false)
+				if err != nil {
+					log.Printf("could not ack delivery: %v", err)
+				}
+			case NackRequeue:
+				err := d.Nack(false, true)
+				if err != nil {
+					log.Printf("could not ack delivery: %v", err)
+				}
+			default:
+				err := d.Nack(false, true)
+				if err != nil {
+					log.Printf("could not ack delivery: %v", err)
+				}
+			}
+		}
+	}()
+
+	return nil
 }
